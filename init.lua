@@ -52,44 +52,47 @@ end
 -- ウィンドウ配置関数
 -- ==========================================
 
--- 中央モニター: Terminal（デフォルトサイズで左側に配置）
+-- 中央モニター: Terminal（左半分、Claudeと同じ高さ）
 local function positionTerminal()
     local app = hs.application.get("Terminal")
-    if not app then 
+    if not app then
         hs.alert.show("Terminal not found")
-        return 
+        return
     end
-    
-    local win = app:mainWindow()
-    if not win then 
+
+    -- フォーカスされているウィンドウを取得（最新のウィンドウ）
+    local win = app:focusedWindow()
+    if not win then
+        -- フォーカスされているウィンドウがない場合はmainWindowを使用
+        win = app:mainWindow()
+    end
+
+    if not win then
         hs.alert.show("Terminal window not found")
-        return 
+        return
     end
-    
+
     local screen = getCenterScreen()
     local screenFrame = screen:frame()
-    
-    -- 現在のウィンドウサイズを取得
-    local currentFrame = win:frame()
-    
-    print("Terminal current: " .. hs.inspect(currentFrame))
+
+    print("Terminal current: " .. hs.inspect(win:frame()))
     print("Center screen: " .. hs.inspect(screenFrame))
-    
-    -- サイズはそのまま、位置だけを中央モニター（A271D）の左上に移動
+
+    -- 中央モニター（A271D）の左半分、Claudeと同じ高さ（Dock上に空白）
     local newFrame = hs.geometry.rect(
         screenFrame.x,  -- 中央モニターの左端（x=0）
         screenFrame.y,  -- 中央モニターの上端（y=31）
-        currentFrame.w,  -- 現在の幅を維持
-        currentFrame.h   -- 現在の高さを維持
+        screenFrame.w / 2,  -- 画面幅の半分
+        screenFrame.h - config.dockGap  -- Claudeと同じ高さ（Dock上に空白）
     )
-    
+
     print("Terminal target: " .. hs.inspect(newFrame))
-    
+
     win:setFrame(newFrame, 0)
-    
+
     local afterFrame = win:frame()
     print("Terminal after: " .. hs.inspect(afterFrame))
-    
+
     hs.alert.show("✓ Terminal配置完了")
 end
 
@@ -190,10 +193,35 @@ local function positionFocusToDo()
     end
 end
 
+-- Slackで検索を実行する関数
+local function searchInSlack(keyword)
+    local slack = hs.application.get("Slack")
+    if not slack then
+        hs.alert.show("Slackが起動していません")
+        return
+    end
+
+    slack:activate()
+    hs.timer.usleep(300000)
+
+    -- Cmd+F でメッセージ検索窓を開く
+    hs.eventtap.keyStroke({"cmd"}, "f")
+    hs.timer.usleep(500000)
+
+    -- キーワードを入力
+    if keyword and keyword ~= "" then
+        hs.eventtap.keyStrokes(keyword)
+        hs.timer.usleep(300000)
+
+        -- Enterで検索実行
+        hs.eventtap.keyStroke({}, "return")
+    end
+end
+
 -- ==========================================
 -- メイン関数: 勉強用ワークフロー起動
 -- ==========================================
-function startStudyWorkflow()
+function startStudyWorkflow(slackSearchKeyword)
     hs.notify.new({
         title = "勉強モード起動中",
         informativeText = "アプリケーションを起動しています..."
@@ -201,21 +229,21 @@ function startStudyWorkflow()
     
     -- 1. Terminal を起動
     local terminal = hs.application.get("Terminal")
-    
+
     if not terminal then
         -- Terminalが起動していない場合
         hs.application.launchOrFocus("Terminal")
-        hs.timer.usleep(1000000)  -- 起動待ち
+        hs.timer.usleep(1500000)  -- 起動待ち（1.5秒）
         terminal = hs.application.get("Terminal")
     else
         -- 既に起動している場合は新規ウィンドウ
         terminal:activate()
         hs.timer.usleep(500000)
         hs.eventtap.keyStroke({"cmd"}, "n")  -- 新規ウィンドウ
-        hs.timer.usleep(800000)
+        hs.timer.usleep(1200000)  -- ウィンドウ作成待ち（1.2秒）
     end
-    
-    -- ウィンドウが作成されるまで待機
+
+    -- ウィンドウが確実に作成されフォーカスされるまで待機
     hs.timer.usleep(500000)
     positionTerminal()
     hs.timer.usleep(500000)
@@ -257,15 +285,12 @@ function startStudyWorkflow()
     positionSlack()
     hs.timer.usleep(500000)
     
-    -- Slackの特定スレッドを開く
-    local slack = hs.application.get("Slack")
-    if slack then
-        slack:activate()
-        hs.timer.usleep(500000)
-        -- Cmd+K でクイック切り替え
-        hs.eventtap.keyStroke({"cmd"}, "k")
-        hs.timer.usleep(500000)
-        -- URLをペーストして開く（代替方法）
+    -- Slackの特定スレッドを開くか、キーワード検索
+    if slackSearchKeyword and slackSearchKeyword ~= "" then
+        -- キーワードが指定されている場合は検索
+        searchInSlack(slackSearchKeyword)
+    else
+        -- キーワードがない場合は特定スレッドを開く
         hs.urlevent.openURL(config.slackThreadURL)
         hs.timer.usleep(1000000)
     end
@@ -306,22 +331,75 @@ function startStudyWorkflow()
 end
 
 -- ==========================================
--- ホットキー設定（オプション）
+-- ホットキー設定
 -- ==========================================
--- Cmd+Shift+S で起動
+-- Cmd+Shift+S で通常起動（デフォルトスレッド）
 hs.hotkey.bind({"cmd", "shift"}, "S", function()
     startStudyWorkflow()
 end)
 
+-- Cmd+Shift+P でSlack検索キーワード入力付き起動
+hs.hotkey.bind({"cmd", "shift"}, "P", function()
+    -- テキスト入力で選択肢を表示
+    local button, choice = hs.dialog.textPrompt(
+        "勉強モード起動",
+        "起動モードを選択してください:\nA = 検索機能付き\nB = 通常起動",
+        "",
+        "OK",
+        "キャンセル"
+    )
+
+    if button == "OK" then
+        if choice == "A" or choice == "a" then
+            -- 検索機能付き起動
+            local button2, keyword = hs.dialog.textPrompt(
+                "Slack検索キーワード入力",
+                "Slack検索キーワードを入力してください:",
+                "",
+                "OK",
+                "キャンセル"
+            )
+
+            if button2 == "OK" and keyword ~= "" then
+                startStudyWorkflow(keyword)
+            else
+                startStudyWorkflow()
+            end
+        elseif choice == "B" or choice == "b" then
+            -- 通常起動
+            startStudyWorkflow()
+        else
+            hs.alert.show("無効な選択です。通常起動します。")
+            startStudyWorkflow()
+        end
+    end
+end)
+
 -- ==========================================
--- メニューバーボタン（オプション）
+-- メニューバーボタン
 -- ==========================================
 local menubar = hs.menubar.new()
 if menubar then
     menubar:setTitle("📚")
     menubar:setTooltip("勉強モード起動")
     menubar:setMenu({
-        { title = "勉強モード起動", fn = startStudyWorkflow },
+        { title = "勉強モード起動（通常）", fn = function() startStudyWorkflow() end },
+        { title = "勉強モード起動（Slack検索）", fn = function()
+            -- Hammerspoonのテキスト入力ダイアログを使用
+            local button, keyword = hs.dialog.textPrompt(
+                "Slack検索キーワード入力",
+                "Slack検索キーワードを入力してください:",
+                "",
+                "OK",
+                "キャンセル"
+            )
+
+            if button == "OK" and keyword ~= "" then
+                startStudyWorkflow(keyword)
+            else
+                startStudyWorkflow()
+            end
+        end },
         { title = "-" },
         { title = "Hammerspoon再読み込み", fn = function() hs.reload() end }
     })
@@ -332,7 +410,7 @@ end
 -- ==========================================
 hs.notify.new({
     title = "Hammerspoon 読み込み完了",
-    informativeText = "Cmd+Shift+S で勉強モードを起動できます"
+    informativeText = "Cmd+Shift+S: 通常起動\nCmd+Shift+P: Slack検索付き起動"
 }):send()
 
-hs.alert.show("Hammerspoon設定読み込み完了\nCmd+Shift+S で起動")
+hs.alert.show("Hammerspoon設定読み込み完了\nCmd+Shift+S: 通常 / Cmd+Shift+P: Slack検索")
